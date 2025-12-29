@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Tasks</title>
+    <style>
+        :root { --primary: #6366f1; --bg: #f8fafc; --text: #1e293b; }
+        body { font-family: sans-serif; background-color: var(--bg); color: var(--text); display: flex; justify-content: center; padding: 20px; }
+        .container { width: 100%; max-width: 400px; background: white; padding: 2rem; border-radius: 16px; box-shadow: 0 10px 15px rgba(0,0,0,0.1); }
+        .input-group { display: flex; gap: 10px; margin-bottom: 1.5rem; }
+        input { flex: 1; padding: 12px; border: 2px solid #e2e8f0; border-radius: 8px; outline: none; }
+        button#add-btn { background: var(--primary); color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        ul { list-style: none; padding: 0; }
+        li { background: #f1f5f9; margin-bottom: 8px; padding: 12px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .delete-btn { background: #ef4444; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>Smart Tasks</h2>
+    <div class="input-group">
+        <input type="text" id="taskInput" placeholder="What needs to be done?">
+        <button id="add-btn" onclick="addTask()">Add</button>
+    </div>
+    <ul id="taskList"></ul>
+</div>
+<script>
+    const taskInput = document.getElementById('taskInput');
+    const taskList = document.getElementById('taskList');
+    document.addEventListener('DOMContentLoaded', getTasks);
+    function addTask() {
+        if (taskInput.value === '') return;
+        createTaskElement(taskInput.value);
+        saveLocal(taskInput.value);
+        taskInput.value = '';
+    }
+    function createTaskElement(text) {
+        const li = document.createElement('li');
+        li.innerHTML = `<span>${text}</span><button class="delete-btn" onclick="removeTask(this)">Delete</button>`;
+        taskList.appendChild(li);
+    }
+    function saveLocal(task) {
+        let tasks = localStorage.getItem('tasks') ? JSON.parse(localStorage.getItem('tasks')) : [];
+        tasks.push(task);
+        localStorage.setItem('tasks', JSON.stringify(tasks));
+    }
+    function getTasks() {
+        let tasks = localStorage.getItem('tasks') ? JSON.parse(localStorage.getItem('tasks')) : [];
+        tasks.forEach(task => createTaskElement(task));
+    }
+    function removeTask(btn) {
+        const text = btn.parentElement.firstChild.textContent.trim();
+        btn.parentElement.remove();
+        let tasks = JSON.parse(localStorage.getItem('tasks'));
+        localStorage.setItem('tasks', JSON.stringify(tasks.filter(t => t !== text)));
+    }
+</script>
+</body>
+</html>
