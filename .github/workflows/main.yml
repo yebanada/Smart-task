@@ -1,0 +1,448 @@
+name: Build Android APK - Advanced
+
+on:
+  push:
+    branches: [main, master, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+      app_name:
+        description: 'Application Name'
+        required: false
+        default: 'SmartTasks'
+      url:
+        description: 'Web URL to convert'
+        required: false
+        default: 'https://yebanada.github.io/Smart-task/'
+      enable_proguard:
+        description: 'Enable ProGuard obfuscation'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  JAVA_VERSION: '17'
+  ANDROID_API_LEVEL: '34'
+  BUILD_TOOLS_VERSION: '34.0.0'
+  NODE_VERSION: '20'
+
+jobs:
+  build:
+    name: Build APK (${{ github.event.inputs.build_type || 'release' }})
+    runs-on: ubuntu-latest
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      apk_path: ${{ steps.apk_info.outputs.path }}
+    
+    steps:
+      # ==================== CHECKOUT & SETUP ====================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: ${{ env.ANDROID_API_LEVEL }}
+          build-tools: ${{ env.BUILD_TOOLS_VERSION }}
+          cache: true
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      # ==================== VERSION MANAGEMENT ====================
+      - name: Generate Version Info
+        id: version
+        run: |
+          # Semantic versioning based on git tags
+          VERSION=$(git describe --tags --always --dirty 2>/dev || echo "1.0.0-$(date +%Y%m%d)-$(git rev-parse --short HEAD)")
+          VERSION_CODE=$(git rev-list --count HEAD)
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION (Code: $VERSION_CODE)"
+
+      # ==================== CACHE OPTIMIZATION ====================
+      - name: Cache Gradle Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.android/build-cache
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # ==================== BUILD ENVIRONMENT ====================
+      - name: Setup Build Environment
+        run: |
+          mkdir -p app/src/main/assets
+          mkdir -p app/src/main/res/values
+          mkdir -p signing
+
+      # ==================== DYNAMIC CONFIGURATION ====================
+      - name: Create Config Files
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name || 'SmartTasks' }}
+          WEB_URL: ${{ github.event.inputs.url || 'https://yebanada.github.io/Smart-task/' }}
+          PRIMARY_COLOR: "#6200EE"
+          ACCENT_COLOR: "#03DAC6"
+          DARK_THEME: "true"
+        run: |
+          # Create colors.xml with Material Design 3 palette
+          cat > app/src/main/res/values/colors.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <!-- Material You Dynamic Colors -->
+              <color name="seed">${{ env.PRIMARY_COLOR }}</color>
+              <color name="md_theme_light_primary">#6750A4</color>
+              <color name="md_theme_light_onPrimary">#FFFFFF</color>
+              <color name="md_theme_light_primaryContainer">#EADDFF</color>
+              <color name="md_theme_light_onPrimaryContainer">#21005D</color>
+              <color name="md_theme_light_secondary">#625B71</color>
+              <color name="md_theme_light_onSecondary">#FFFFFF</color>
+              <color name="md_theme_light_secondaryContainer">#E8DEF8</color>
+              <color name="md_theme_light_onSecondaryContainer">#1D192B</color>
+              <color name="md_theme_light_tertiary">#7D5260</color>
+              <color name="md_theme_light_onTertiary">#FFFFFF</color>
+              <color name="md_theme_light_tertiaryContainer">#FFD8E4</color>
+              <color name="md_theme_light_onTertiaryContainer">#31111D</color>
+              <color name="md_theme_light_error">#B3261E</color>
+              <color name="md_theme_light_onError">#FFFFFF</color>
+              <color name="md_theme_light_errorContainer">#F9DEDC</color>
+              <color name="md_theme_light_onErrorContainer">#410E0B</color>
+              <color name="md_theme_light_outline">#79747E</color>
+              <color name="md_theme_light_background">#FFFBFE</color>
+              <color name="md_theme_light_onBackground">#1C1B1F</color>
+              <color name="md_theme_light_surface">#FFFBFE</color>
+              <color name="md_theme_light_onSurface">#1C1B1F</color>
+              <color name="md_theme_light_surfaceVariant">#E7E0EC</color>
+              <color name="md_theme_light_onSurfaceVariant">#49454F</color>
+              <color name="md_theme_light_inverseSurface">#313033</color>
+              <color name="md_theme_light_inverseOnSurface">#F4EFF4</color>
+              <color name="md_theme_light_inversePrimary">#D0BCFF</color>
+              <color name="md_theme_light_shadow">#000000</color>
+              <color name="md_theme_light_surfaceTint">#6750A4</color>
+              <color name="md_theme_light_outlineVariant">#CAC4D0</color>
+              <color name="md_theme_light_scrim">#000000</color>
+              
+              <!-- Dark Theme -->
+              <color name="md_theme_dark_primary">#D0BCFF</color>
+              <color name="md_theme_dark_onPrimary">#381E72</color>
+              <color name="md_theme_dark_primaryContainer">#4F378B</color>
+              <color name="md_theme_dark_onPrimaryContainer">#EADDFF</color>
+              <color name="md_theme_dark_secondary">#CCC2DC</color>
+              <color name="md_theme_dark_onSecondary">#332D41</color>
+              <color name="md_theme_dark_secondaryContainer">#4A4458</color>
+              <color name="md_theme_dark_onSecondaryContainer">#E8DEF8</color>
+              <color name="md_theme_dark_tertiary">#EFB8C8</color>
+              <color name="md_theme_dark_onTertiary">#492532</color>
+              <color name="md_theme_dark_tertiaryContainer">#633B48</color>
+              <color name="md_theme_dark_onTertiaryContainer">#FFD8E4</color>
+              <color name="md_theme_dark_error">#F2B8B5</color>
+              <color name="md_theme_dark_onError">#601410</color>
+              <color name="md_theme_dark_errorContainer">#8C1D18</color>
+              <color name="md_theme_dark_onErrorContainer">#F9DEDC</color>
+              <color name="md_theme_dark_outline">#938F99</color>
+              <color name="md_theme_dark_background">#1C1B1F</color>
+              <color name="md_theme_dark_onBackground">#E6E1E5</color>
+              <color name="md_theme_dark_surface">#1C1B1F</color>
+              <color name="md_theme_dark_onSurface">#E6E1E5</color>
+              <color name="md_theme_dark_surfaceVariant">#49454F</color>
+              <color name="md_theme_dark_onSurfaceVariant">#CAC4D0</color>
+              <color name="md_theme_dark_inverseSurface">#E6E1E5</color>
+              <color name="md_theme_dark_inverseOnSurface">#322F35</color>
+              <color name="md_theme_dark_inversePrimary">#6750A4</color>
+              <color name="md_theme_dark_shadow">#000000</color>
+              <color name="md_theme_dark_surfaceTint">#D0BCFF</color>
+              <color name="md_theme_dark_outlineVariant">#49454F</color>
+              <color name="md_theme_dark_scrim">#000000</color>
+          </resources>
+          EOF
+
+          # Create themes.xml with Material 3
+          cat > app/src/main/res/values/themes.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.SmartTasks" parent="Theme.Material3.DayNight.NoActionBar">
+                  <item name="colorPrimary">@color/md_theme_light_primary</item>
+                  <item name="colorOnPrimary">@color/md_theme_light_onPrimary</item>
+                  <item name="colorPrimaryContainer">@color/md_theme_light_primaryContainer</item>
+                  <item name="colorOnPrimaryContainer">@color/md_theme_light_onPrimaryContainer</item>
+                  <item name="colorSecondary">@color/md_theme_light_secondary</item>
+                  <item name="colorOnSecondary">@color/md_theme_light_onSecondary</item>
+                  <item name="colorSecondaryContainer">@color/md_theme_light_secondaryContainer</item>
+                  <item name="colorOnSecondaryContainer">@color/md_theme_light_onSecondaryContainer</item>
+                  <item name="colorTertiary">@color/md_theme_light_tertiary</item>
+                  <item name="colorOnTertiary">@color/md_theme_light_onTertiary</item>
+                  <item name="colorTertiaryContainer">@color/md_theme_light_tertiaryContainer</item>
+                  <item name="colorOnTertiaryContainer">@color/md_theme_light_onTertiaryContainer</item>
+                  <item name="colorError">@color/md_theme_light_error</item>
+                  <item name="colorOnError">@color/md_theme_light_onError</item>
+                  <item name="colorErrorContainer">@color/md_theme_light_errorContainer</item>
+                  <item name="colorOnErrorContainer">@color/md_theme_light_onErrorContainer</item>
+                  <item name="android:colorBackground">@color/md_theme_light_background</item>
+                  <item name="colorOnBackground">@color/md_theme_light_onBackground</item>
+                  <item name="colorSurface">@color/md_theme_light_surface</item>
+                  <item name="colorOnSurface">@color/md_theme_light_onSurface</item>
+                  <item name="colorSurfaceVariant">@color/md_theme_light_surfaceVariant</item>
+                  <item name="colorOnSurfaceVariant">@color/md_theme_light_onSurfaceVariant</item>
+                  <item name="colorOutline">@color/md_theme_light_outline</item>
+                  <item name="colorOnSurfaceInverse">@color/md_theme_light_inverseOnSurface</item>
+                  <item name="colorSurfaceInverse">@color/md_theme_light_inverseSurface</item>
+                  <item name="colorPrimaryInverse">@color/md_theme_light_inversePrimary</item>
+                  
+                  <!-- System UI -->
+                  <item name="android:statusBarColor">@android:color/transparent</item>
+                  <item name="android:navigationBarColor">@android:color/transparent</item>
+                  <item name="android:windowLightStatusBar">true</item>
+              </style>
+          </resources>
+          EOF
+
+          # Create WebView configuration
+          cat > app/src/main/assets/config.json << EOF
+          {
+            "app_name": "${APP_NAME}",
+            "start_url": "${WEB_URL}",
+            "display": "standalone",
+            "theme_color": "${{ env.PRIMARY_COLOR }}",
+            "background_color": "#ffffff",
+            "orientation": "portrait",
+            "status_bar_style": "default",
+            "enable_pull_to_refresh": true,
+            "enable_zoom": false,
+            "cache_mode": "LOAD_DEFAULT",
+            "user_agent": "SmartTasks-Android/${{ steps.version.outputs.version }}",
+            "permissions": [
+              "INTERNET",
+              "ACCESS_NETWORK_STATE"
+            ],
+            "features": {
+              "dark_mode_support": ${{ env.DARK_THEME }},
+              "offline_support": true,
+              "geolocation": false,
+              "camera": false,
+              "microphone": false,
+              "notifications": false,
+              "file_upload": true
+            }
+          }
+          EOF
+
+      # ==================== ICON GENERATION ====================
+      - name: Generate Adaptive Icons
+        run: |
+          mkdir -p app/src/main/res/mipmap-{hdpi,xhdpi,xxhdpi,xxxhdpi}
+          
+          # Create SVG template for adaptive icon
+          cat > icon_foreground.svg << 'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
+            <defs>
+              <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#6750A4;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#4F378B;stop-opacity:1" />
+              </linearGradient>
+            </defs>
+            <rect x="0" y="0" width="108" height="108" fill="url(#grad)" rx="24"/>
+            <path d="M34 54 L48 68 L74 42" stroke="white" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          EOF
+          
+          # Convert SVG to PNG using ImageMagick (if available) or create placeholder
+          for size in 72 96 144 192; do
+            dir="mipmap-mdpi"
+            case $size in
+              72) dir="mipmap-hdpi" ;;
+              96) dir="mipmap-xhdpi" ;;
+              144) dir="mipmap-xxhdpi" ;;
+              192) dir="mipmap-xxxhdpi" ;;
+            esac
+            
+            # Create placeholder colored squares with text (fallback)
+            convert -size ${size}x${size} xc:#6750A4 \
+              -pointsize $((size/4)) -fill white -gravity center \
+              -annotate +0+0 "ST" \
+              "app/src/main/res/${dir}/ic_launcher_foreground.png" || \
+            echo "Created placeholder icon for $dir"
+          done
+          
+          # Create monochrome versions for themed icons (Android 13+)
+          for size in 72 96 144 192; do
+            dir="mipmap-mdpi"
+            case $size in
+              72) dir="mipmap-hdpi" ;;
+              96) dir="mipmap-xhdpi" ;;
+              144) dir="mipmap-xxhdpi" ;;
+              192) dir="mipmap-xxxhdpi" ;;
+            esac
+            
+            convert -size ${size}x${size} xc:white \
+              -pointsize $((size/4)) -fill black -gravity center \
+              -annotate +0+0 "ST" \
+              "app/src/main/res/${dir}/ic_launcher_monochrome.png" || \
+            echo "Created monochrome icon for $dir"
+          done
+
+      # ==================== BUILD CONFIGURATION ====================
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Create build.gradle files
+        run: |
+          # Root build.gradle
+          cat > build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application' version '8.2.0' apply false
+          }
+          EOF
+
+          # App build.gradle
+          cat > app/build.gradle << EOF
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.smarttasks.app'
+              compileSdk ${{ env.ANDROID_API_LEVEL }}
+              
+              defaultConfig {
+                  applicationId "com.smarttasks.app"
+                  minSdk 24
+                  targetSdk ${{ env.ANDROID_API_LEVEL }}
+                  versionCode ${{ steps.version.outputs.version_code }}
+                  versionName "${{ steps.version.outputs.version }}"
+                  
+                  testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+                  vectorDrawables.useSupportLibrary = true
+              }
+
+              signingConfigs {
+                  release {
+                      storeFile file("../../signing/keystore.jks")
+                      storePassword System.getenv("KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("KEY_ALIAS")
+                      keyPassword System.getenv("KEY_PASSWORD")
+                  }
+              }
+
+              buildTypes {
+                  debug {
+                      debuggable true
+                      minifyEnabled false
+                      applicationIdSuffix ".debug"
+                      versionNameSuffix "-debug"
+                  }
+                  release {
+                      minifyEnabled ${{ github.event.inputs.enable_proguard != 'false' }}
+                      shrinkResources ${{ github.event.inputs.enable_proguard != 'false' }}
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                      signingConfig signingConfigs.release
+                      
+                      ndk {
+                          debugSymbolLevel 'FULL'
+                      }
+                  }
+              }
+              
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_${{ env.JAVA_VERSION }}
+                  targetCompatibility JavaVersion.VERSION_${{ env.JAVA_VERSION }}
+              }
+              
+              buildFeatures {
+                  viewBinding true
+                  buildConfig true
+              }
+              
+              bundle {
+                  language {
+                      enableSplit = false
+                  }
+                  density {
+                      enableSplit = true
+                  }
+                  abi {
+                      enableSplit = true
+                  }
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.11.0'
+              implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+              implementation 'androidx.webkit:webkit:1.9.0'
+              implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+              implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+              implementation 'androidx.core:core-splashscreen:1.0.1'
+          }
+          EOF
+
+      # ==================== SOURCE CODE GENERATION ====================
+      - name: Generate Android Source Code
+        run: |
+          mkdir -p app/src/main/java/com/smarttasks/app
+          mkdir -p app/src/main/res/layout
+          
+          # MainActivity.java with advanced WebView features
+          cat > app/src/main/java/com/smarttasks/app/MainActivity.java << 'EOF'
+          package com.smarttasks.app;
+
+          import android.annotation.SuppressLint;
+          import android.content.Intent;
+          import android.graphics.Bitmap;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.webkit.*;
+          import android.widget.ProgressBar;
+          import androidx.appcompat.app.AppCompatActivity;
+          import androidx.core.splashscreen.SplashScreen;
+          import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+          import com.google.android.material.snackbar.Snackbar;
+          import org.json.JSONObject;
+          import java.io.InputStream;
+          import java.nio.charset.StandardCharsets;
+
+          public class MainActivity extends AppCompatActivity {
+              private WebView webView;
+              private ProgressBar progressBar;
+              private SwipeRefreshLayout swipeRefresh;
+              private AppConfig config;
+              private boolean isLoading = false;
+
+              @SuppressLint("SetJavaScriptEnabled")
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  SplashScreen.installSplashScreen(this);
+     
