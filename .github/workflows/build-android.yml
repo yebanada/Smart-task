@@ -1,0 +1,394 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'App Name (leave empty for auto-detect)'
+        required: false
+        default: ''
+      website_url:
+        description: 'Website URL to convert'
+        required: false
+        default: ''
+      build_type:
+        description: 'Build Type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # STEP 1: Get your code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # STEP 2: Figure out the app name dynamically
+      - name: Set App Name
+        id: vars
+        run: |
+          # If user provided a name in workflow dispatch, use it
+          if [ -n "${{ github.event.inputs.app_name }}" ]; then
+            APP_NAME="${{ github.event.inputs.app_name }}"
+          else
+            # Otherwise use repository name (convert dashes to spaces, capitalize)
+            APP_NAME=$(echo "${{ github.event.repository.name }}" | sed 's/-/ /g' | sed 's/\b\w/\u&/g')
+          fi
+          
+          # If user provided URL, use it, otherwise use GitHub Pages URL
+          if [ -n "${{ github.event.inputs.website_url }}" ]; then
+            WEB_URL="${{ github.event.inputs.website_url }}"
+          else
+            WEB_URL="https://${{ github.event.repository.owner.login }}.github.io/${{ github.event.repository.name }}/"
+          fi
+          
+          # Create safe package name (com.owner.repo)
+          PACKAGE_NAME="com.${{ github.event.repository.owner.login }}.${{ github.event.repository.name }}"
+          PACKAGE_NAME=$(echo "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]' | tr '-' '_' | tr ' ' '_')
+          
+          echo "app_name=$APP_NAME" >> $GITHUB_OUTPUT
+          echo "web_url=$WEB_URL" >> $GITHUB_OUTPUT
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+          echo "version=$(date +'%Y.%m.%d').${{ github.run_number }}" >> $GITHUB_OUTPUT
+          
+          echo "Building: $APP_NAME"
+          echo "Package: $PACKAGE_NAME"
+          echo "URL: $WEB_URL"
+
+      # STEP 3: Setup Java
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # STEP 4: Setup Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # STEP 5: Create the Android project structure
+      - name: Create Android Project
+        run: |
+          mkdir -p app/src/main/java/app
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-mdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          mkdir -p app/src/main/res/drawable
+
+      # STEP 6: Create build files
+      - name: Create Build Files
+        run: |
+          # build.gradle (Project level)
+          cat > build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application' version '8.1.0' apply false
+          }
+          EOF
+
+          # build.gradle (App level)
+          cat > app/build.gradle << EOF
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace '${{ steps.vars.outputs.package_name }}'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "${{ steps.vars.outputs.package_name }}"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode ${{ github.run_number }}
+                  versionName "${{ steps.vars.outputs.version }}"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled true
+                      shrinkResources true
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+                  debug {
+                      minifyEnabled false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.9.0'
+              implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+              implementation 'androidx.webkit:webkit:1.7.0'
+          }
+          EOF
+
+          # settings.gradle
+          cat > settings.gradle << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "WebApp"
+          include ':app'
+          EOF
+
+          # gradle.properties
+          cat > gradle.properties << 'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          EOF
+
+      # STEP 7: Create the app code
+      - name: Create App Source Code
+        run: |
+          # MainActivity.java - The main screen with WebView
+          cat > app/src/main/java/app/MainActivity.java << 'EOF'
+          package app;
+
+          import android.annotation.SuppressLint;
+          import android.graphics.Bitmap;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.ProgressBar;
+          import androidx.appcompat.app.AppCompatActivity;
+          import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+          import com.google.android.material.color.DynamicColors;
+
+          public class MainActivity extends AppCompatActivity {
+              private WebView webView;
+              private ProgressBar progressBar;
+              private SwipeRefreshLayout swipeRefresh;
+
+              @SuppressLint("SetJavaScriptEnabled")
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  // Apply dynamic colors (Material You)
+                  DynamicColors.applyToActivityIfAvailable(this);
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+
+                  webView = findViewById(R.id.webview);
+                  progressBar = findViewById(R.id.progress);
+                  swipeRefresh = findViewById(R.id.swipe);
+
+                  // Setup WebView
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setDatabaseEnabled(true);
+                  settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+                  
+                  // Better performance
+                  settings.setRenderPriority(WebSettings.RenderPriority.HIGH);
+                  
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                          progressBar.setVisibility(View.VISIBLE);
+                      }
+                      
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          progressBar.setVisibility(View.GONE);
+                          swipeRefresh.setRefreshing(false);
+                      }
+                  });
+                  
+                  webView.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onProgressChanged(WebView view, int newProgress) {
+                          progressBar.setProgress(newProgress);
+                      }
+                  });
+
+                  // Pull to refresh
+                  swipeRefresh.setOnRefreshListener(() -> webView.reload());
+                  
+                  // Load the website
+                  webView.loadUrl(getString(R.string.web_url));
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          EOF
+
+      # STEP 8: Create layouts and resources
+      - name: Create Resources
+        run: |
+          # Layout file
+          cat > app/src/main/res/layout/activity_main.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <androidx.swiperefreshlayout.widget.SwipeRefreshLayout 
+              xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/swipe"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+              <FrameLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent">
+
+                  <WebView
+                      android:id="@+id/webview"
+                      android:layout_width="match_parent"
+                      android:layout_height="match_parent" />
+
+                  <ProgressBar
+                      android:id="@+id/progress"
+                      style="@style/Widget.AppCompat.ProgressBar.Horizontal"
+                      android:layout_width="match_parent"
+                      android:layout_height="4dp"
+                      android:layout_gravity="top"
+                      android:progressTint="?attr/colorPrimary"
+                      android:visibility="gone" />
+
+              </FrameLayout>
+          </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+          EOF
+
+          # Colors
+          cat > app/src/main/res/values/colors.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="purple_500">#FF6200EE</color>
+              <color name="purple_700">#FF3700B3</color>
+              <color name="teal_200">#FF03DAC5</color>
+          </resources>
+          EOF
+
+          # Strings (dynamic app name and URL)
+          cat > app/src/main/res/values/strings.xml << EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">${{ steps.vars.outputs.app_name }}</string>
+              <string name="web_url">${{ steps.vars.outputs.web_url }}</string>
+          </resources>
+          EOF
+
+          # Theme (Material 3)
+          cat > app/src/main/res/values/themes.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.WebApp" parent="Theme.Material3.DayNight.NoActionBar">
+                  <item name="colorPrimary">@color/purple_500</item>
+                  <item name="colorPrimaryVariant">@color/purple_700</item>
+                  <item name="colorOnPrimary">@android:color/white</item>
+                  <item name="colorSecondary">@color/teal_200</item>
+                  <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
+              </style>
+          </resources>
+          EOF
+
+          # Android Manifest
+          cat > app/src/main/AndroidManifest.xml << EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.WebApp"
+                  android:usesCleartextTraffic="false">
+                  
+                  <activity
+                      android:name="app.MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+      # STEP 9: Generate icons automatically
+      - name: Generate App Icons
+        run: |
+          # Create simple colored icons with app initials
+          INITIALS=$(echo "${{ steps.vars.outputs.app_name }}" | awk '{print toupper(substr($0,1,1))}')
+          
+          for size in 48 72 96 144 192; do
+            case $size in
+              48) dir="mipmap-mdpi" ;;
+              72) dir="mipmap-hdpi" ;;
+              96) dir="mipmap-xhdpi" ;;
+              144) dir="mipmap-xxhdpi" ;;
+              192) dir="mipmap-xxxhdpi" ;;
+            esac
+            
+            # Generate using ImageMagick or create placeholder
+            if command -v convert &> /dev/null; then
+              convert -size ${size}x${size} xc:#6200EE \
+                -pointsize $((size/2)) -fill white -gravity center \
+                -annotate +0+0 "$INITIALS" \
+                "app/src/main/res/$dir/ic_launcher_foreground.png"
+            else
+              # Create a simple colored square as placeholder
+              printf "\x89PNG\r\n\x1a\n" > "app/src/main/res/$dir/ic_launcher_foreground.png"
+            fi
+          done
+
+      # STEP 10: Build the APK
+      - name: Build APK
+        run: |
+          chmod +x gradlew 2>/dev/null || true
+          ./gradlew assemble${{ github.event.inputs.build_type == 'debug' && 'Debug' || 'Release' }} \
+            --no-daemon \
+            --max-workers=2
+
+      # STEP 11: Upload the APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.vars.outputs.app_name }}-${{ github.event.inputs.build_type || 'release' }}
+          path: app/build/outputs/apk/**/*.apk
